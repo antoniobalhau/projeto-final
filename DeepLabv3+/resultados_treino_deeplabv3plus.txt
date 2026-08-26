@@ -1,0 +1,9 @@
+===== RESULTADOS FINAIS DEEPLABV3+ SEM BACKGROUND =====
+Accuracy treino final: 74.30%
+Accuracy validação final: 72.14%
+IoU/Jaccard treino final: 44.97%
+IoU/Jaccard validação final: 35.00%
+
+===== MELHORES RESULTADOS DEEPLABV3+ SEM BACKGROUND =====
+Melhor accuracy validação: 75.42% na época 87
+Melhor IoU/Jaccard validação: 37.11% na época 77
