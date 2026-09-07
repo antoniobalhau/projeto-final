@@ -1,19 +1,18 @@
-import random
-from pathlib import Path
+import random  # importa random para escolher exemplos aleatórios para mostrar
+from pathlib import Path  # facilita o trabalho com caminhos de pastas e ficheiros
 
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
-from matplotlib.patches import Patch
+import cv2  # abre imagens e converte BGR para RGB
+import numpy as np  # trabalha com arrays numéricos e operações de imagem
+import matplotlib.pyplot as plt  # serve para mostrar imagens e gráficos
+from matplotlib.colors import ListedColormap  # serve para criar um colormap personalizado para as máscaras
+from matplotlib.patches import Patch  # serve para criar uma legenda com cores das classes
 
-from patchify import patchify
-from sklearn.model_selection import train_test_split
+from patchify import patchify  # divide imagens grandes em blocos mais pequenos (patches)
+from sklearn.model_selection import train_test_split  # divide o dataset em treino, validação e teste
 
-import tensorflow as tf
-import tensorflow as tf
-from tensorflow.keras.models import Model, load_model
-from tensorflow.keras.layers import (
+import tensorflow as tf  # framework principal para treinar a rede neural
+from tensorflow.keras.models import Model, load_model  # cria e carrega modelos da rede
+from tensorflow.keras.layers import (  # define as camadas da arquitetura da rede
     Input,
     Conv2D,
     MaxPooling2D,
@@ -21,34 +20,35 @@ from tensorflow.keras.layers import (
     concatenate,
     Dropout,
 )
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.metrics import MeanIoU
-from tensorflow.keras.callbacks import ModelCheckpoint
-import tensorflow.keras.backend as K
+from tensorflow.keras.optimizers import Adam  # otimizador usado para ajustar os pesos da rede
+from tensorflow.keras.utils import to_categorical  # converte máscaras em formato one-hot
+from tensorflow.keras.metrics import MeanIoU  # calcula a métrica de IoU média
+from tensorflow.keras.callbacks import ModelCheckpoint  # guarda o melhor modelo durante o treino
+import tensorflow.keras.backend as K  # funções auxiliares do backend do TensorFlow
 
-print("GPUs disponíveis:", tf.config.list_physical_devices("GPU"))
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
 
-BASE_DIR = Path("treino")
+BASE_DIR = Path("treino")  # pasta principal do dataset
 
-IMAGES_DIR = BASE_DIR / "imagens"
-MASKS_DIR = BASE_DIR / "mascaras"
+IMAGES_DIR = BASE_DIR / "imagens"  # diretório das imagens de entrada
+MASKS_DIR = BASE_DIR / "mascaras"  # diretório das máscaras de referência
 
-MODELS_DIR = Path("modelos")
-MODELS_DIR.mkdir(exist_ok=True)
+MODELS_DIR = Path("modelos")  # pasta onde o modelo será guardado
+MODELS_DIR.mkdir(exist_ok=True)  # cria a pasta se ainda não existir
 
-PATCH_SIZE = 256
+PATCH_SIZE = 256  # tamanho dos blocos usados para treinar a rede
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
-MASK_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}  # extensões válidas para imagens
+MASK_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}  # extensões válidas para máscaras
 
 
 # ============================================================
 # CLASSES DA SEGMENTAÇÃO
 # ============================================================
+# Mapa da cor de cada classe para converter a máscara colorida em índices
+# numéricos durante o treino.
 
 CLASS_COLORS = {
     "background": (0, 0, 0),
@@ -59,10 +59,10 @@ CLASS_COLORS = {
     "edificio": (245, 147, 49),
 }
 
-CLASS_NAMES = list(CLASS_COLORS.keys())
-NUMBER_OF_CLASSES = len(CLASS_NAMES)
+CLASS_NAMES = list(CLASS_COLORS.keys())  # ordem das classes no modelo
+NUMBER_OF_CLASSES = len(CLASS_NAMES)  # número total de classes
 
-# Classe ignorada nas métricas e na loss
+# Classe ignorada nas métricas e na perda, porque é o fundo
 IGNORE_CLASS_ID = 0
 
 SEGMENTATION_CMAP = ListedColormap(
@@ -78,6 +78,8 @@ SEGMENTATION_CMAP = ListedColormap(
 # ============================================================
 
 def list_files(folder: Path, valid_extensions: set[str]) -> list[Path]:
+    # Lista apenas ficheiros válidos dentro da pasta e ignora outros tipos de
+    # conteúdo que não fazem parte do dataset.
     if not folder.exists():
         raise FileNotFoundError(f"A pasta não existe: {folder}")
 
@@ -91,10 +93,14 @@ def list_files(folder: Path, valid_extensions: set[str]) -> list[Path]:
 
 
 def create_file_map(files: list[Path]) -> dict[str, Path]:
+    # Cria um mapa pelo nome do ficheiro para facilitar a associação entre
+    # imagem e máscara sem depender da ordem da pasta.
     return {file.stem: file for file in files}
 
 
 def find_image_mask_pairs() -> list[tuple[Path, Path]]:
+    # Emparelha cada imagem com a respetiva máscara usando o mesmo nome
+    # e avisa quando há ficheiros sem correspondência.
     image_files = list_files(IMAGES_DIR, IMAGE_EXTENSIONS)
     mask_files = list_files(MASKS_DIR, MASK_EXTENSIONS)
 
@@ -126,6 +132,8 @@ def find_image_mask_pairs() -> list[tuple[Path, Path]]:
 
 
 def load_rgb_image(image_path: Path) -> np.ndarray:
+    # Lê a imagem em BGR e converte para RGB para manter o mesmo padrão usado
+    # pela visualização em matplotlib e pela rede neural.
     image_bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
 
     if image_bgr is None:
@@ -135,6 +143,8 @@ def load_rgb_image(image_path: Path) -> np.ndarray:
 
 
 def load_rgb_mask(mask_path: Path) -> np.ndarray:
+    # Lê a máscara em formato RGB para depois converter cada pixel para o seu
+    # identificador de classe.
     mask_bgr = cv2.imread(str(mask_path), cv2.IMREAD_COLOR)
 
     if mask_bgr is None:
@@ -148,6 +158,8 @@ def crop_to_patch_size(
     mask: np.ndarray,
     patch_size: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    # Ajusta as dimensões para múltiplos do tamanho do patch para evitar
+    # cortes inconsistentes na divisão por blocos.
     if image.shape[:2] != mask.shape[:2]:
         raise ValueError(
             "A imagem e a máscara têm dimensões diferentes: "
@@ -172,6 +184,8 @@ def crop_to_patch_size(
 
 
 def rgb_mask_to_class_mask(mask_rgb: np.ndarray) -> np.ndarray:
+    # Transforma uma máscara colorida em uma máscara de classes numéricas,
+    # para que a rede treine com etiquetas discretas em vez de cores RGB.
     class_mask = np.zeros(mask_rgb.shape[:2], dtype=np.uint8)
     recognized_pixels = np.zeros(mask_rgb.shape[:2], dtype=bool)
 
@@ -209,34 +223,34 @@ def create_patches(
     class_mask: np.ndarray,
     patch_size: int,
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
-    image_patches = patchify(
+    image_patches = patchify(  # divide a imagem em blocos 256x256x3
         image,
         (patch_size, patch_size, 3),
         step=patch_size,
     )
 
-    mask_patches = patchify(
+    mask_patches = patchify(  # divide a máscara em blocos 256x256
         class_mask,
         (patch_size, patch_size),
         step=patch_size,
     )
 
-    image_patch_list = []
-    mask_patch_list = []
+    image_patch_list = []  # guarda os patches da imagem
+    mask_patch_list = []  # guarda os patches da máscara
 
-    number_of_rows = image_patches.shape[0]
-    number_of_columns = image_patches.shape[1]
+    number_of_rows = image_patches.shape[0]  # número de linhas de patches
+    number_of_columns = image_patches.shape[1]  # número de colunas de patches
 
     for row in range(number_of_rows):
         for column in range(number_of_columns):
-            image_patch = image_patches[row, column, 0]
-            mask_patch = mask_patches[row, column]
+            image_patch = image_patches[row, column, 0]  # bloco individual da imagem
+            mask_patch = mask_patches[row, column]  # bloco individual da máscara
 
-            image_patch = image_patch.astype(np.float32) / 255.0
-            mask_patch = mask_patch.astype(np.uint8)
+            image_patch = image_patch.astype(np.float32) / 255.0  # normaliza para [0,1]
+            mask_patch = mask_patch.astype(np.uint8)  # converte para inteiros das classes
 
-            image_patch_list.append(image_patch)
-            mask_patch_list.append(mask_patch)
+            image_patch_list.append(image_patch)  # guarda o patch da imagem
+            mask_patch_list.append(mask_patch)  # guarda o patch da máscara
 
     return image_patch_list, mask_patch_list
 
@@ -248,7 +262,7 @@ def split_image_mask_pairs(
     test_ratio=0.15,
     random_state=42,
 ):
-    if not np.isclose(
+    if not np.isclose(  # verifica se as proporções somam 1
         train_ratio + validation_ratio + test_ratio,
         1.0,
     ):
@@ -256,7 +270,7 @@ def split_image_mask_pairs(
             "As percentagens de treino, validação e teste devem somar 1."
         )
 
-    train_pairs, temporary_pairs = train_test_split(
+    train_pairs, temporary_pairs = train_test_split(  # separa treino dos restantes
         pairs,
         test_size=validation_ratio + test_ratio,
         random_state=random_state,
@@ -267,7 +281,7 @@ def split_image_mask_pairs(
         test_ratio / (validation_ratio + test_ratio)
     )
 
-    validation_pairs, test_pairs = train_test_split(
+    validation_pairs, test_pairs = train_test_split(  # separa validação e teste
         temporary_pairs,
         test_size=test_fraction_of_temporary,
         random_state=random_state,
@@ -275,14 +289,16 @@ def split_image_mask_pairs(
     )
 
     print("\nDivisão do dataset:")
-    print(f"Treino: {len(train_pairs)} imagens")
-    print(f"Validação: {len(validation_pairs)} imagens")
-    print(f"Teste: {len(test_pairs)} imagens")
+    print(f"Treino: {len(train_pairs)} imagens")  # número de pares para treino
+    print(f"Validação: {len(validation_pairs)} imagens")  # número de pares para validação
+    print(f"Teste: {len(test_pairs)} imagens")  # número de pares para teste
 
     return train_pairs, validation_pairs, test_pairs
 
 
 def prepare_dataset_from_pairs(pairs, dataset_name):
+    # Processa cada par de imagem/máscara e guarda todos os patches em listas
+    # que depois serão convertidas em arrays numpy para o treino da rede.
     image_dataset = []
     mask_dataset = []
 
@@ -292,40 +308,42 @@ def prepare_dataset_from_pairs(pairs, dataset_name):
         print(
             f"[{index}/{len(pairs)}] "
             f"{image_path.name} | {mask_path.name}"
-        )
+        )  # mostra o par atual que está a ser processado
 
-        image = load_rgb_image(image_path)
-        mask_rgb = load_rgb_mask(mask_path)
+        image = load_rgb_image(image_path)  # carrega imagem em RGB
+        mask_rgb = load_rgb_mask(mask_path)  # carrega máscara em RGB
 
-        image, mask_rgb = crop_to_patch_size(
+        image, mask_rgb = crop_to_patch_size(  # ajusta tamanho ao multiplo do patch
             image,
             mask_rgb,
             PATCH_SIZE,
         )
 
-        class_mask = rgb_mask_to_class_mask(mask_rgb)
+        class_mask = rgb_mask_to_class_mask(mask_rgb)  # converte RGB em índices de classe
 
-        image_patches, mask_patches = create_patches(
+        image_patches, mask_patches = create_patches(  # gera os patches da imagem e da máscara
             image,
             class_mask,
             PATCH_SIZE,
         )
 
-        image_dataset.extend(image_patches)
-        mask_dataset.extend(mask_patches)
+        image_dataset.extend(image_patches)  # acrescenta patches ao conjunto
+        mask_dataset.extend(mask_patches)  # acrescenta máscaras ao conjunto
 
-    images_array = np.asarray(image_dataset, dtype=np.float32)
-    masks_array = np.asarray(mask_dataset, dtype=np.uint8)
+    images_array = np.asarray(image_dataset, dtype=np.float32)  # array final das imagens
+    masks_array = np.asarray(mask_dataset, dtype=np.uint8)  # array final das máscaras
 
-    print(f"{dataset_name}: {len(images_array)} patches criados.")
-    print(f"Formato das imagens: {images_array.shape}")
-    print(f"Formato das máscaras: {masks_array.shape}")
-    print(f"Classes encontradas: {np.unique(masks_array)}")
+    print(f"{dataset_name}: {len(images_array)} patches criados.")  # total de amostras
+    print(f"Formato das imagens: {images_array.shape}")  # dimensão do tensor de imagens
+    print(f"Formato das máscaras: {masks_array.shape}")  # dimensão do tensor de máscaras
+    print(f"Classes encontradas: {np.unique(masks_array)}")  # valores únicos presentes
 
     return images_array, masks_array
 
 
 def add_class_legend():
+    # Cria a legenda das classes para facilitar a leitura visual das máscaras
+    # ao mostrar imagens e previsões no matplotlib.
     legend_handles = [
         Patch(
             facecolor=tuple(channel / 255.0 for channel in CLASS_COLORS[name]),
@@ -345,6 +363,8 @@ def add_class_legend():
 
 
 def show_random_examples(images, masks, number_of_examples=15):
+    # Exibe alguns patches aleatórios para validar visualmente se a amostragem,
+    # a conversão das máscaras e o alinhamento estão corretos.
     number_of_examples = min(number_of_examples, len(images))
 
     selected_indexes = random.sample(
@@ -380,6 +400,8 @@ def show_random_examples(images, masks, number_of_examples=15):
 # ============================================================
 
 def masked_categorical_crossentropy(y_true, y_pred):
+    # Calcula a perda de cross-entropy ignorando os pixéis da classe 0, porque
+    # normalmente o background não é relevante para a métrica de segmentação.
     y_true_ids = tf.argmax(y_true, axis=-1)
 
     valid_mask = tf.not_equal(y_true_ids, IGNORE_CLASS_ID)
@@ -393,6 +415,8 @@ def masked_categorical_crossentropy(y_true, y_pred):
 
 
 def masked_accuracy(y_true, y_pred):
+    # Mede a precisão apenas nos pixels válidos, para que o background não
+    # distorça a avaliação do desempenho real da rede.
     y_true_ids = tf.argmax(y_true, axis=-1)
     y_pred_ids = tf.argmax(y_pred, axis=-1)
 
@@ -410,6 +434,8 @@ def masked_accuracy(y_true, y_pred):
 
 
 def masked_jaccard_coef(y_true, y_pred):
+    # Calcula o IoU médio por classe, ignorando o background, de forma a
+    # avaliar a qualidade da segmentação para cada classe de interesse.
     y_true_ids = tf.argmax(y_true, axis=-1)
     y_pred_ids = tf.argmax(y_pred, axis=-1)
 
@@ -442,6 +468,8 @@ def convolution_block(
     kernel_size=3,
     dilation_rate=1,
 ):
+    # Bloco de extração de características com duas convoluções consecutivas.
+    # Ajuda a capturar padrões locais sem aumentar demasiado a complexidade.
     x = Conv2D(
         filters,
         kernel_size,
@@ -517,6 +545,9 @@ def build_deeplabv3plus_model(
     image_channels: int,
     number_of_classes: int,
 ) -> Model:
+    # Constrói a arquitetura principal do modelo: encoder, ASPP e decoder.
+    # O objetivo é obter segmentação detalhada, preservando contexto global e
+    # informação espacial dos pixeis.
     inputs = Input((image_height, image_width, image_channels))
 
     # ========================================================
@@ -615,6 +646,8 @@ def train_deeplabv3plus_model(
     epochs=100,
     batch_size=4,
 ):
+    # Prepara as máscaras para o formato one-hot e inicia o treino do modelo,
+    # guardando a melhor versão durante as épocas.
     train_masks_cat = to_categorical(
         train_masks,
         num_classes=NUMBER_OF_CLASSES,
@@ -671,6 +704,8 @@ def train_deeplabv3plus_model(
 # ============================================================
 
 def plot_training_history(history):
+    # Mostra como a perda e as métricas evoluíram ao longo do treino para
+    # verificar se a rede está a aprender corretamente ou a overfit.
     plt.figure(figsize=(8, 5))
     plt.plot(history.history["loss"], label="Loss treino")
     plt.plot(history.history["val_loss"], label="Loss validação")
@@ -712,6 +747,8 @@ def plot_training_history(history):
 
 
 def save_training_results(history):
+    # Extrai as métricas finais e grava-as num ficheiro para facilitar a
+    # comparação entre experimentos e a análise dos resultados do treino.
     final_train_accuracy = history.history["masked_accuracy"][-1]
     final_val_accuracy = history.history["val_masked_accuracy"][-1]
     final_train_iou = history.history["masked_jaccard_coef"][-1]
@@ -793,6 +830,8 @@ def evaluate_model_with_mean_iou(
     test_images,
     test_masks,
 ):
+    # Avalia o modelo em dados de teste, compara as previsões com as máscaras
+    # reais e apresenta métricas de desempenho por classe e globalmente.
     predictions = model.predict(test_images)
     predicted_masks = np.argmax(predictions, axis=-1)
 
@@ -847,6 +886,8 @@ def show_prediction_examples(
     predicted_masks,
     number_of_examples=4,
 ):
+    # Apresenta exemplos visuais de teste para confirmar se as previsões do
+    # modelo estão coerentes com as máscaras anotadas.
     number_of_examples = min(number_of_examples, len(test_images))
 
     selected_indexes = random.sample(
@@ -892,6 +933,8 @@ def show_prediction_examples(
 # ============================================================
 
 if __name__ == "__main__":
+    # Bloco principal de execução: prepara o dataset, treina o modelo e avalia
+    # a qualidade das previsões finais.
     print("Modelo: DeepLabV3+ simplificado")
     print("Pasta de imagens:", IMAGES_DIR)
     print("Pasta de máscaras:", MASKS_DIR)
